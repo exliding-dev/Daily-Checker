@@ -8,7 +8,16 @@ import {
   MdCheck,
   MdNote,
   MdAccessTime,
+  MdCloudDone,
+  MdCloudOff,
 } from "react-icons/md";
+import {
+  saveNote as apiSaveNote,
+  getNotes as apiGetNotes,
+  updateNote as apiUpdateNote,
+  deleteNote as apiDeleteNote,
+  isUserRegistered,
+} from "../lib/api";
 
 interface Note {
   id: string;
@@ -16,11 +25,12 @@ interface Note {
   content: string;
   createdAt: string;
   updatedAt: string;
+  source?: "server" | "local";
 }
 
 const STORAGE_KEY = "maag_notes";
 
-function loadNotes(): Note[] {
+function loadLocalNotes(): Note[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     return data ? JSON.parse(data) : [];
@@ -29,7 +39,7 @@ function loadNotes(): Note[] {
   }
 }
 
-function saveNotes(notes: Note[]) {
+function saveLocalNotes(notes: Note[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
 }
 
@@ -51,40 +61,124 @@ export default function NotesTab() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"synced" | "local" | "loading">("loading");
 
-  // Load notes on mount
+  // Load notes from server and local
   useEffect(() => {
-    setNotes(loadNotes());
+    async function loadNotes() {
+      setIsLoading(true);
+      const localNotes = loadLocalNotes();
+
+      if (isUserRegistered()) {
+        try {
+          const response = await apiGetNotes(1, 100);
+          if (response.success && response.data) {
+            // Map server data to Note format
+            const serverNotes: Note[] = response.data.map((item: any) => ({
+              id: item.uuid,
+              title: item.title,
+              content: item.content,
+              createdAt: item.created_at,
+              updatedAt: item.updated_at,
+              source: "server" as const,
+            }));
+
+            // Merge: prefer server data, keep local-only items
+            const serverIds = new Set(serverNotes.map((n) => n.id));
+            const localOnly = localNotes.filter((n) => !serverIds.has(n.id));
+            const merged = [...serverNotes, ...localOnly].sort(
+              (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+            );
+
+            setNotes(merged);
+            setSyncStatus("synced");
+          } else {
+            // Server unavailable — use local
+            setNotes(localNotes);
+            setSyncStatus("local");
+          }
+        } catch {
+          setNotes(localNotes);
+          setSyncStatus("local");
+        }
+      } else {
+        setNotes(localNotes);
+        setSyncStatus("local");
+      }
+
+      setIsLoading(false);
+    }
+
+    loadNotes();
   }, []);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!content.trim()) return;
 
+    setIsSaving(true);
     const now = new Date().toISOString();
 
     if (editingNote) {
-      // Update existing
+      // Update existing note
+      const updatedNote = {
+        ...editingNote,
+        title: title.trim() || "Tanpa judul",
+        content: content.trim(),
+        updatedAt: now,
+      };
+
       const updated = notes.map((n) =>
-        n.id === editingNote.id
-          ? { ...n, title: title.trim() || "Tanpa judul", content: content.trim(), updatedAt: now }
-          : n
+        n.id === editingNote.id ? updatedNote : n
       );
       setNotes(updated);
-      saveNotes(updated);
+      saveLocalNotes(updated);
+
+      // Sync to server
+      if (isUserRegistered()) {
+        try {
+          await apiUpdateNote(editingNote.id, {
+            title: updatedNote.title,
+            content: updatedNote.content,
+          });
+        } catch (e) {
+          console.error("[MAAG API] Failed to update note on server:", e);
+        }
+      }
     } else {
-      // Create new
+      // Create new note
       const newNote: Note = {
         id: crypto.randomUUID(),
         title: title.trim() || "Tanpa judul",
         content: content.trim(),
         createdAt: now,
         updatedAt: now,
+        source: "local",
       };
+
+      // Save to server first (to get server UUID)
+      if (isUserRegistered()) {
+        try {
+          const response = await apiSaveNote({
+            title: newNote.title,
+            content: newNote.content,
+          });
+          if (response.success && response.data) {
+            newNote.id = response.data.uuid;
+            newNote.source = "server";
+          }
+        } catch (e) {
+          console.error("[MAAG API] Failed to save note to server:", e);
+        }
+      }
+
       const updated = [newNote, ...notes];
       setNotes(updated);
-      saveNotes(updated);
+      saveLocalNotes(updated);
     }
 
+    setIsSaving(false);
     resetEditor();
   };
 
@@ -95,10 +189,20 @@ export default function NotesTab() {
     setShowEditor(true);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     const updated = notes.filter((n) => n.id !== id);
     setNotes(updated);
-    saveNotes(updated);
+    saveLocalNotes(updated);
+
+    // Delete from server
+    if (isUserRegistered()) {
+      try {
+        await apiDeleteNote(id);
+      } catch (e) {
+        console.error("[MAAG API] Failed to delete note from server:", e);
+      }
+    }
+
     setDeleteConfirm(null);
   };
 
@@ -108,6 +212,20 @@ export default function NotesTab() {
     setTitle("");
     setContent("");
   };
+
+  // ─── Loading State ───
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center pt-16">
+        <motion.div
+          className="w-8 h-8 border-3 border-[#d4e8d0] border-t-[#3d6b35] rounded-full"
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+        />
+        <p className="text-sm text-[#6a8f62] mt-3">Memuat catatan...</p>
+      </div>
+    );
+  }
 
   // ─── Editor View ───
   if (showEditor) {
@@ -133,13 +251,21 @@ export default function NotesTab() {
           </h3>
           <motion.button
             onClick={handleSave}
-            disabled={!content.trim()}
+            disabled={!content.trim() || isSaving}
             className={`flex items-center gap-1.5 text-sm font-semibold ${
-              content.trim() ? "text-[#3d6b35]" : "text-[#a8cfa0]"
+              content.trim() && !isSaving ? "text-[#3d6b35]" : "text-[#a8cfa0]"
             }`}
             whileTap={content.trim() ? { scale: 0.95 } : undefined}
           >
-            <MdCheck className="w-5 h-5" />
+            {isSaving ? (
+              <motion.div
+                className="w-4 h-4 border-2 border-[#d4e8d0] border-t-[#3d6b35] rounded-full"
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+              />
+            ) : (
+              <MdCheck className="w-5 h-5" />
+            )}
             Simpan
           </motion.button>
         </div>
@@ -198,9 +324,21 @@ export default function NotesTab() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-[#2d4a28]">Catatan</h2>
-          <p className="text-xs text-[#6a8f62]">
-            {notes.length > 0 ? `${notes.length} catatan tersimpan` : "Belum ada catatan"}
-          </p>
+          <div className="flex items-center gap-1.5">
+            <p className="text-xs text-[#6a8f62]">
+              {notes.length > 0 ? `${notes.length} catatan tersimpan` : "Belum ada catatan"}
+            </p>
+            {syncStatus === "synced" && (
+              <span className="flex items-center gap-0.5 text-[10px] text-green-600 font-medium">
+                <MdCloudDone className="w-3 h-3" /> Synced
+              </span>
+            )}
+            {syncStatus === "local" && (
+              <span className="flex items-center gap-0.5 text-[10px] text-amber-600 font-medium">
+                <MdCloudOff className="w-3 h-3" /> Lokal
+              </span>
+            )}
+          </div>
         </div>
         <motion.button
           onClick={() => setShowEditor(true)}
@@ -260,6 +398,9 @@ export default function NotesTab() {
                   <span className="text-[10px] text-[#6a8f62]">
                     {formatDate(note.updatedAt)}
                   </span>
+                  {note.source === "server" && (
+                    <MdCloudDone className="w-3 h-3 text-green-500" title="Tersinkronisasi" />
+                  )}
                 </div>
               </div>
 

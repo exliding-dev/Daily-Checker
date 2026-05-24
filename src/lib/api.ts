@@ -234,3 +234,103 @@ export function getStoredUserUuid(): string | null {
 export function getStoredUserName(): string | null {
   return localStorage.getItem("maag_user_name");
 }
+
+/**
+ * Clear all user session data (for logout)
+ */
+export function clearUserSession(): void {
+  localStorage.removeItem("maag_user_uuid");
+  localStorage.removeItem("maag_device_id");
+  localStorage.removeItem("maag_user_name");
+  localStorage.removeItem("maag_history");
+  localStorage.removeItem("maag_notes");
+}
+
+/* ─── Notes API ──────────────────────────────────── */
+
+interface NoteData {
+  uuid: string;
+  title: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Save a new note to WordPress
+ */
+export async function saveNote(note: {
+  title: string;
+  content: string;
+}): Promise<ApiResponse<NoteData>> {
+  const userUuid = getUserUuid();
+  if (!userUuid) {
+    return { success: false, message: "User not registered" };
+  }
+
+  return apiFetch<NoteData>("/notes", {
+    method: "POST",
+    body: JSON.stringify({
+      user_uuid: userUuid,
+      title: note.title,
+      content: note.content,
+    }),
+  });
+}
+
+/**
+ * Get user's notes from WordPress
+ */
+export async function getNotes(
+  page = 1,
+  perPage = 50
+): Promise<ApiResponse<NoteData[]>> {
+  const userUuid = getUserUuid();
+  if (!userUuid) {
+    return { success: false, message: "User not registered" };
+  }
+
+  const separator = API_BASE_URL.includes("?") ? "&" : "?";
+  return apiFetch<NoteData[]>(
+    `/notes/${userUuid}${separator}page=${page}&per_page=${perPage}`
+  );
+}
+
+/**
+ * Update a note on WordPress
+ */
+export async function updateNote(noteUuid: string, note: {
+  title: string;
+  content: string;
+}): Promise<ApiResponse<NoteData>> {
+  const userUuid = getUserUuid();
+  if (!userUuid) {
+    return { success: false, message: "User not registered" };
+  }
+
+  return apiFetch<NoteData>(`/notes/${noteUuid}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      user_uuid: userUuid,
+      title: note.title,
+      content: note.content,
+    }),
+  });
+}
+
+/**
+ * Delete a note on WordPress
+ */
+export async function deleteNote(
+  noteUuid: string
+): Promise<ApiResponse<void>> {
+  const userUuid = getUserUuid();
+  if (!userUuid) {
+    return { success: false, message: "User not registered" };
+  }
+
+  return apiFetch<void>(`/notes/${noteUuid}/delete`, {
+    method: "DELETE",
+    body: JSON.stringify({ user_uuid: userUuid }),
+  });
+}

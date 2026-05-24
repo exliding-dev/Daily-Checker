@@ -178,7 +178,7 @@ export default function WelcomeScreen({ onStart }: WelcomeScreenProps) {
             transition={{ duration: 0.5, delay: 0.4 }}
           >
             <MdVerifiedUser className="w-4 h-4 text-[#3d6b35]" />
-            <span>Data kamu aman dan tersimpan di browser</span>
+            <span>Data kamu aman dan tersinkronisasi</span>
           </motion.div>
         </motion.div>
       </div>
@@ -294,7 +294,7 @@ export default function WelcomeScreen({ onStart }: WelcomeScreenProps) {
           transition={{ duration: 0.5, delay: 0.8 }}
         >
           <MdVerifiedUser className="w-4 h-4" />
-          <span>Data kamu aman dan tersimpan di browser</span>
+          <span>Data kamu aman dan tersinkronisasi</span>
         </motion.div>
       </div>
     </div>

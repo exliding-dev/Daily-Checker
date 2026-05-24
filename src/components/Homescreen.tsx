@@ -17,6 +17,7 @@ import {
 import { DailyCheck } from "./daily-check";
 import WelcomeScreen from "./LoginScreen";
 import NotesTab from "./NotesTab";
+import { clearUserSession } from "../lib/api";
 
 import HistoryTab from "./HistoryTab";
 
@@ -43,9 +44,7 @@ export default function Homescreen() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("maag_user_name");
-    localStorage.removeItem("maag_history");
-    localStorage.removeItem("maag_notes");
+    clearUserSession();
     setUserName("");
     setCurrentScreen("welcome");
     setActiveTab("home");
@@ -382,8 +381,8 @@ function ProfileTabContent({ userName, onNameChange, onLogout }: ProfileTabConte
             <MdVerifiedUser className="w-5 h-5 text-[#3d6b35]" />
           </div>
           <div>
-            <h4 className="text-sm font-semibold text-[#2d4a28]">Penyimpanan Lokal</h4>
-            <p className="text-xs text-[#6a8f62]">Data tersimpan di browser kamu</p>
+            <h4 className="text-sm font-semibold text-[#2d4a28]">Tersinkronisasi</h4>
+            <p className="text-xs text-[#6a8f62]">Data tersimpan di server & browser</p>
           </div>
         </div>
       </div>

@@ -7,11 +7,15 @@ import {
   MdWarning,
   MdError,
   MdAccessTime,
+  MdCloudDone,
+  MdCloudOff,
 } from "react-icons/md";
+import { getDailyCheckHistory, deleteDailyCheck, isUserRegistered } from "../lib/api";
 
 interface HistoryItem {
   id: string;
   date: string;
+  source: "server" | "local";
   result: {
     riskLevel: "low" | "medium" | "high";
     totalScore: number;
@@ -22,16 +26,17 @@ interface HistoryItem {
 
 const STORAGE_KEY = "maag_history";
 
-function loadHistory(): HistoryItem[] {
+function loadLocalHistory(): HistoryItem[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
+    const items = data ? JSON.parse(data) : [];
+    return items.map((item: any) => ({ ...item, source: "local" as const }));
   } catch {
     return [];
   }
 }
 
-function saveHistory(history: HistoryItem[]) {
+function saveLocalHistory(history: HistoryItem[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
 }
 
@@ -68,24 +73,112 @@ const riskConfig = {
 export default function HistoryTab() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [syncStatus, setSyncStatus] = useState<"synced" | "local" | "loading">("loading");
 
+  // Load history from both server and local
   useEffect(() => {
-    setHistory(loadHistory());
+    async function loadHistory() {
+      setIsLoading(true);
+      const localHistory = loadLocalHistory();
+
+      if (isUserRegistered()) {
+        try {
+          const response = await getDailyCheckHistory(1, 100);
+          if (response.success && response.data) {
+            // Map server data to HistoryItem format
+            const serverHistory: HistoryItem[] = response.data.map((item: any) => ({
+              id: item.uuid,
+              date: item.checked_at,
+              source: "server" as const,
+              result: {
+                riskLevel: item.risk_level,
+                totalScore: item.total_score,
+                maxScore: item.max_score,
+                triggers: item.triggers || [],
+              },
+            }));
+
+            // Merge: prefer server data, add any local-only items
+            const serverIds = new Set(serverHistory.map((h) => h.id));
+            const localOnly = localHistory.filter((h) => !serverIds.has(h.id));
+            const merged = [...serverHistory, ...localOnly].sort(
+              (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+            );
+
+            setHistory(merged);
+            setSyncStatus("synced");
+          } else {
+            // Server error — fall back to local
+            setHistory(localHistory);
+            setSyncStatus("local");
+          }
+        } catch {
+          setHistory(localHistory);
+          setSyncStatus("local");
+        }
+      } else {
+        setHistory(localHistory);
+        setSyncStatus("local");
+      }
+
+      setIsLoading(false);
+    }
+
+    loadHistory();
   }, []);
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    // Optimistic delete from UI
     const updated = history.filter((item) => item.id !== id);
     setHistory(updated);
-    saveHistory(updated);
+
+    // Remove from localStorage
+    const localUpdated = loadLocalHistory().filter((item) => item.id !== id);
+    saveLocalHistory(localUpdated);
+
+    // Delete from server too
+    if (isUserRegistered()) {
+      try {
+        await deleteDailyCheck(id);
+      } catch (e) {
+        console.error("[MAAG API] Failed to delete from server:", e);
+      }
+    }
+
     setDeleteConfirm(null);
   };
 
-  const handleClearAll = () => {
+  const handleClearAll = async () => {
     if (window.confirm("Apakah Anda yakin ingin menghapus semua riwayat check harian?")) {
+      // Delete all from server
+      if (isUserRegistered()) {
+        for (const item of history) {
+          try {
+            await deleteDailyCheck(item.id);
+          } catch (e) {
+            console.error("[MAAG API] Failed to delete:", e);
+          }
+        }
+      }
+
       setHistory([]);
       localStorage.removeItem(STORAGE_KEY);
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center pt-16">
+        <motion.div
+          className="w-8 h-8 border-3 border-[#d4e8d0] border-t-[#3d6b35] rounded-full"
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+        />
+        <p className="text-sm text-[#6a8f62] mt-3">Memuat riwayat...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -93,11 +186,23 @@ export default function HistoryTab() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-[#2d4a28]">Riwayat Check</h2>
-          <p className="text-xs text-[#6a8f62]">
-            {history.length > 0
-              ? `${history.length} pemeriksaan tercatat`
-              : "Belum ada riwayat pemeriksaan"}
-          </p>
+          <div className="flex items-center gap-1.5">
+            <p className="text-xs text-[#6a8f62]">
+              {history.length > 0
+                ? `${history.length} pemeriksaan tercatat`
+                : "Belum ada riwayat pemeriksaan"}
+            </p>
+            {syncStatus === "synced" && (
+              <span className="flex items-center gap-0.5 text-[10px] text-green-600 font-medium">
+                <MdCloudDone className="w-3 h-3" /> Synced
+              </span>
+            )}
+            {syncStatus === "local" && (
+              <span className="flex items-center gap-0.5 text-[10px] text-amber-600 font-medium">
+                <MdCloudOff className="w-3 h-3" /> Lokal
+              </span>
+            )}
+          </div>
         </div>
         {history.length > 0 && (
           <button
@@ -149,6 +254,9 @@ export default function HistoryTab() {
                     <span className="text-xs text-[#6a8f62] font-medium">
                       {formatDate(item.date)}
                     </span>
+                    {item.source === "server" && (
+                      <MdCloudDone className="w-3 h-3 text-green-500" title="Tersinkronisasi" />
+                    )}
                   </div>
                 </div>
 
